@@ -9,6 +9,17 @@ Core DocuBot class responsible for:
 
 import os
 import glob
+import re
+
+
+MIN_RELEVANCE_SCORE = 1
+STOP_WORDS = {
+    "a", "an", "and", "are", "about", "be", "does", "for", "how", "i",
+    "in", "is", "it", "me", "of", "on", "or", "the", "this", "to", "what",
+    "when", "where", "which", "who", "why", "with", "you", "docs", "document",
+    "documentation", "mention", "tell", "any", "there", "these",
+}
+
 
 class DocuBot:
     def __init__(self, docs_folder="docs", llm_client=None):
@@ -64,7 +75,10 @@ class DocuBot:
         ignore punctuation if needed.
         """
         index = {}
-        # TODO: implement simple indexing
+        for filename, text in documents:
+            words = set(re.findall(r"\b\w+\b", text.lower()))
+            for word in words:
+                index.setdefault(word, []).append(filename)
         return index
 
     # -----------------------------------------------------------
@@ -81,19 +95,74 @@ class DocuBot:
         - Count how many appear in the text
         - Return the count as the score
         """
-        # TODO: implement scoring
-        return 0
+        query_words = self._meaningful_query_words(query)
+        document_words = re.findall(r"\b\w+\b", text.lower())
+        return sum(document_words.count(word) for word in query_words)
+
+    def _meaningful_query_words(self, query):
+        """Return query terms that describe a topic rather than ask a question."""
+        return {
+            word
+            for word in re.findall(r"\b\w+\b", query.lower())
+            if word not in STOP_WORDS
+        }
+
+    def _split_into_sections(self, text):
+        """Split a document into non-empty, newline-separated paragraphs."""
+        return [
+            section.strip()
+            for section in re.split(r"\n\s*\n", text.strip())
+            if section.strip()
+        ]
 
     def retrieve(self, query, top_k=3):
         """
         TODO (Phase 1):
-        Use the index and scoring function to select top_k relevant document snippets.
+        Use the index and scoring function to select top_k relevant document
+        sections.
 
         Return a list of (filename, text) sorted by score descending.
         """
-        results = []
-        # TODO: implement retrieval logic
-        return results[:top_k]
+        if top_k <= 0:
+            return []
+
+        query_words = self._meaningful_query_words(query)
+        if not query_words:
+            return []
+
+        candidate_files = {
+            filename
+            for word in query_words
+            for filename in self.index.get(word, [])
+        }
+
+        scored_results = []
+        for document_number, (filename, text) in enumerate(self.documents):
+            if filename in candidate_files:
+                document_sections = []
+                for section_number, section in enumerate(
+                    self._split_into_sections(text)
+                ):
+                    score = self.score_document(query, section)
+                    if score > 0:
+                        document_sections.append(
+                            (score, section_number, filename, section)
+                        )
+                if document_sections:
+                    scored_results.append(
+                        min(
+                            document_sections,
+                            key=lambda result: (-result[0], result[1]),
+                        )
+                    )
+
+        scored_results.sort(key=lambda result: (-result[0], result[1]))
+        if not scored_results or scored_results[0][0] < MIN_RELEVANCE_SCORE:
+            return []
+
+        return [
+            (filename, section) for _, _, filename, section in scored_results[:top_k]
+        ]
 
     # -----------------------------------------------------------
     # Answering Modes
